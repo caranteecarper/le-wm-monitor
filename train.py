@@ -14,6 +14,27 @@ from module import SIGReg
 from utils import get_column_normalizer, get_img_preprocessor, SaveCkptCallback
 
 
+def load_train_dataset(dataset_name, cache_dir=None, **dataset_cfg):
+    if hasattr(swm.data, "load_dataset"):
+        return swm.data.load_dataset(
+            dataset_name, transform=None, cache_dir=cache_dir, **dataset_cfg
+        )
+
+    dataset_name = str(dataset_name)
+    if dataset_name.endswith(".h5"):
+        dataset_name = dataset_name[:-3]
+    if dataset_name.endswith(".lance"):
+        raise ValueError(
+            "stable-worldmodel==0.0.6 does not support Lance datasets. "
+            "Use the HDF5 dataset instead, for example "
+            "'pusht_expert_train.h5' under $STABLEWM_HOME."
+        )
+
+    return swm.data.HDF5Dataset(
+        dataset_name, transform=None, cache_dir=cache_dir, **dataset_cfg
+    )
+
+
 def lejepa_forward(self, batch, stage, cfg):
     """encode observations, predict next states, compute losses."""
 
@@ -53,9 +74,7 @@ def run(cfg):
     dataset_cfg = OmegaConf.to_container(cfg.data.dataset, resolve=True)
     dataset_name = dataset_cfg.pop("name")
     cache_dir = os.environ.get("LOCAL_DATASET_DIR", None)
-    dataset = swm.data.load_dataset(
-        dataset_name, transform=None, cache_dir=cache_dir, **dataset_cfg
-    )
+    dataset = load_train_dataset(dataset_name, cache_dir=cache_dir, **dataset_cfg)
     transforms = [get_img_preprocessor(source='pixels', target='pixels', img_size=cfg.img_size)]
     
     with open_dict(cfg):
@@ -106,7 +125,7 @@ def run(cfg):
     ##########################
 
     run_id = cfg.get("subdir") or ""
-    run_dir = Path(swm.data.utils.get_cache_dir(sub_folder='checkpoints'), run_id)
+    run_dir = Path(swm.data.utils.get_cache_dir(), "checkpoints", run_id)
 
     logger = None
     if cfg.wandb.enabled:

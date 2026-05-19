@@ -51,10 +51,19 @@ class SaveCkptCallback(Callback):
                 self._save(pl_module.model, trainer.current_epoch + 1)
 
     def _save(self, model, epoch):
-        from stable_worldmodel.wm.utils import save_pretrained
-        save_pretrained(
-            model,
-            run_name=self.run_name,
-            config=self.cfg,
-            filename=f'weights_epoch_{epoch}.pt',
+        from pathlib import Path
+
+        import stable_worldmodel as swm
+
+        root = Path(swm.data.utils.get_cache_dir())
+        target = Path(self.run_name)
+        if not target.is_absolute():
+            target = root / target
+
+        target.parent.mkdir(parents=True, exist_ok=True)
+        torch.save(model, target.parent / f"{target.name}_object.ckpt")
+        torch.save(model.state_dict(), target.parent / f"{target.name}_weights.ckpt")
+        torch.save(
+            model.state_dict(),
+            target.parent / f"{target.name}_weights_epoch_{epoch}.pt",
         )
