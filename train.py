@@ -7,7 +7,8 @@ import lightning as pl
 import stable_pretraining as spt
 import stable_worldmodel as swm
 import torch
-from lightning.pytorch.loggers import WandbLogger
+import torch.nn.functional as F
+from lightning.pytorch.loggers import CSVLogger, WandbLogger
 from omegaconf import OmegaConf, open_dict
 
 from module import SIGReg
@@ -35,12 +36,66 @@ def load_train_dataset(dataset_name, cache_dir=None, **dataset_cfg):
     )
 
 
+def _norm_mean(x):
+    x = x.detach().float()
+    return x.norm(dim=-1).mean()
+
+
+def _last_dim_stats(prefix, x):
+    x = x.detach().float()
+    flat = x.reshape(-1, x.shape[-1]) if x.ndim > 1 else x.reshape(-1, 1)
+    return {
+        f"{prefix}_mean": flat.mean(),
+        f"{prefix}_std": flat.std(unbiased=False),
+        f"{prefix}_norm": flat.norm(dim=-1).mean(),
+        f"{prefix}_dim_std_mean": flat.std(dim=0, unbiased=False).mean(),
+        f"{prefix}_dim_std_min": flat.std(dim=0, unbiased=False).min(),
+    }
+
+
+def build_monitor_dict(batch, emb, act_emb, pred_emb, tgt_emb):
+    with torch.no_grad():
+        metrics = {}
+        metrics.update(_last_dim_stats("emb", emb))
+        metrics.update(_last_dim_stats("act_emb", act_emb))
+        metrics.update(_last_dim_stats("pred_emb", pred_emb))
+        metrics.update(_last_dim_stats("tgt_emb", tgt_emb))
+
+        pred_flat = pred_emb.detach().float().reshape(-1, pred_emb.shape[-1])
+        tgt_flat = tgt_emb.detach().float().reshape(-1, tgt_emb.shape[-1])
+        metrics["pred_tgt_cosine"] = F.cosine_similarity(
+            pred_flat, tgt_flat, dim=-1
+        ).mean()
+        metrics["pred_tgt_l2"] = (pred_flat - tgt_flat).norm(dim=-1).mean()
+
+        if emb.size(1) > 1:
+            metrics["emb_delta_norm"] = _norm_mean(emb[:, 1:] - emb[:, :-1])
+        if emb.size(1) > 2:
+            velocity = emb[:, 1:] - emb[:, :-1]
+            v_prev = velocity[:, :-1].detach().float().reshape(-1, emb.shape[-1])
+            v_next = velocity[:, 1:].detach().float().reshape(-1, emb.shape[-1])
+            metrics["temporal_straightness"] = F.cosine_similarity(
+                v_prev, v_next, dim=-1
+            ).mean()
+        if "action" in batch:
+            action = batch["action"].detach().float()
+            metrics["action_norm"] = _norm_mean(action)
+            metrics["action_abs_mean"] = action.abs().mean()
+        for key in ("state", "proprio", "observation"):
+            if key in batch and torch.is_tensor(batch[key]):
+                metrics[f"{key}_norm"] = _norm_mean(batch[key])
+
+        return metrics
+
+
 def lejepa_forward(self, batch, stage, cfg):
     """encode observations, predict next states, compute losses."""
 
     ctx_len = cfg.wm.history_size
     n_preds = cfg.wm.num_preds
     lambd = cfg.loss.sigreg.weight
+
+    action_nan_frac = torch.isnan(batch["action"]).float().mean()
 
     # Replace NaN values with 0 (occurs at sequence boundaries)
     batch["action"] = torch.nan_to_num(batch["action"], 0.0)
@@ -63,6 +118,20 @@ def lejepa_forward(self, batch, stage, cfg):
 
     losses_dict = {f"{stage}/{k}": v.detach() for k, v in output.items() if "loss" in k}
     self.log_dict(losses_dict, on_step=True, sync_dist=True)
+
+    monitor_cfg = cfg.get("monitor", {})
+    if monitor_cfg.get("enabled", False):
+        monitor_dict = build_monitor_dict(batch, emb, act_emb, pred_emb, tgt_emb)
+        monitor_dict["action_nan_frac"] = action_nan_frac.detach()
+        monitor_dict = {
+            f"{stage}/monitor/{k}": v.detach() for k, v in monitor_dict.items()
+        }
+        self.log_dict(
+            monitor_dict,
+            on_step=monitor_cfg.get("on_step", True),
+            on_epoch=monitor_cfg.get("on_epoch", True),
+            sync_dist=True,
+        )
     return output
 
 @hydra.main(version_base=None, config_path="./config/train", config_name="lewm")
@@ -126,13 +195,15 @@ def run(cfg):
 
     run_id = cfg.get("subdir") or ""
     run_dir = Path(swm.data.utils.get_cache_dir(), "checkpoints", run_id)
+    run_dir.mkdir(parents=True, exist_ok=True)
 
     logger = None
     if cfg.wandb.enabled:
         logger = WandbLogger(**cfg.wandb.config)
         logger.log_hyperparams(OmegaConf.to_container(cfg))
+    elif cfg.monitor.enabled and cfg.monitor.get("csv_logger", False):
+        logger = CSVLogger(save_dir=str(run_dir), name="metrics")
 
-    run_dir.mkdir(parents=True, exist_ok=True)
     with open(run_dir / "config.yaml", "w") as f:
         OmegaConf.save(cfg, f)
 

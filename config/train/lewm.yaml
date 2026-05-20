@@ -31,6 +31,12 @@ optimizer:
   lr: 5e-5
   weight_decay: 1e-3
 
+monitor:
+  enabled: True
+  on_step: True
+  on_epoch: True
+  csv_logger: True
+
 wm:
   type: lewm
   history_size: 3
