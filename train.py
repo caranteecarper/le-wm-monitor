@@ -7,12 +7,29 @@ import lightning as pl
 import stable_pretraining as spt
 import stable_worldmodel as swm
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 from lightning.pytorch.loggers import CSVLogger, WandbLogger
 from omegaconf import OmegaConf, open_dict
 
 from module import SIGReg
 from utils import get_column_normalizer, get_img_preprocessor, SaveCkptCallback
+
+
+class VelocityAuxHead(nn.Module):
+    """Small readout head used to encourage latents to retain velocity state."""
+
+    def __init__(self, input_dim: int, output_dim: int = 2, hidden_dim: int = 256):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.LayerNorm(input_dim),
+            nn.Linear(input_dim, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, output_dim),
+        )
+
+    def forward(self, emb):
+        return self.net(emb)
 
 
 def load_train_dataset(dataset_name, cache_dir=None, **dataset_cfg):
@@ -88,6 +105,46 @@ def build_monitor_dict(batch, emb, act_emb, pred_emb, tgt_emb):
         return metrics
 
 
+def add_velocity_aux_loss(self, output, batch, emb, stage, cfg):
+    velocity_cfg = cfg.get("velocity_aux", {})
+    if not velocity_cfg.get("enabled", False):
+        return
+    if "observation" not in batch:
+        raise KeyError("velocity_aux requires batch['observation']; enable it in data keys_to_load.")
+    if not hasattr(self.model, "velocity_aux_head"):
+        raise AttributeError("velocity_aux is enabled but model.velocity_aux_head is missing.")
+
+    columns = [int(c) for c in velocity_cfg.get("columns", [4, 5])]
+    target = batch["observation"][..., columns].detach().float()
+    pred = self.model.velocity_aux_head(emb).float()
+
+    per_dim_mse = (pred - target).pow(2).mean(dim=(0, 1))
+    aux_loss = per_dim_mse.mean()
+    weight = float(velocity_cfg.get("weight", 0.05))
+    weighted_loss = weight * aux_loss
+
+    output["velocity_aux_loss"] = aux_loss
+    output["velocity_aux_loss_weighted"] = weighted_loss
+    output["loss"] = output["loss"] + weighted_loss
+
+    metrics = {
+        "loss": aux_loss.detach(),
+        "loss_weighted": weighted_loss.detach(),
+        "pred_std": pred.detach().std(unbiased=False),
+        "target_std": target.detach().std(unbiased=False),
+    }
+    for i, col in enumerate(columns):
+        name = "qvel0" if col == 4 else "qvel1" if col == 5 else f"obs{col}"
+        metrics[f"{name}_mse"] = per_dim_mse[i].detach()
+
+    self.log_dict(
+        {f"{stage}/velocity_aux/{k}": v for k, v in metrics.items()},
+        on_step=velocity_cfg.get("on_step", True),
+        on_epoch=velocity_cfg.get("on_epoch", True),
+        sync_dist=True,
+    )
+
+
 def lejepa_forward(self, batch, stage, cfg):
     """encode observations, predict next states, compute losses."""
 
@@ -115,6 +172,7 @@ def lejepa_forward(self, batch, stage, cfg):
     output["pred_loss"] = (pred_emb - tgt_emb).pow(2).mean()
     output["sigreg_loss"]= self.sigreg(emb.transpose(0, 1))
     output["loss"] = output["pred_loss"] + lambd * output["sigreg_loss"]  
+    add_velocity_aux_loss(self, output, batch, emb, stage, cfg)
 
     losses_dict = {f"{stage}/{k}": v.detach() for k, v in output.items() if "loss" in k}
     self.log_dict(losses_dict, on_step=True, sync_dist=True)
@@ -171,6 +229,14 @@ def run(cfg):
     ##############################
 
     world_model = hydra.utils.instantiate(cfg.model)
+    velocity_cfg = cfg.get("velocity_aux", {})
+    if velocity_cfg.get("enabled", False):
+        columns = [int(c) for c in velocity_cfg.get("columns", [4, 5])]
+        world_model.velocity_aux_head = VelocityAuxHead(
+            input_dim=cfg.wm.embed_dim,
+            output_dim=len(columns),
+            hidden_dim=int(velocity_cfg.get("hidden_dim", 256)),
+        )
 
     optimizers = {
         'model_opt': {

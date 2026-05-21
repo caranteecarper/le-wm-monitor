@@ -37,6 +37,16 @@ monitor:
   on_epoch: True
   csv_logger: True
 
+velocity_aux:
+  enabled: False
+  weight: 0.05
+  columns:
+    - 4
+    - 5
+  hidden_dim: 256
+  on_step: True
+  on_epoch: True
+
 wm:
   type: lewm
   history_size: 3
