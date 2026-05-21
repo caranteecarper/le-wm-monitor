@@ -39,6 +39,14 @@ def parse_args():
         "--checkpoint",
         default=str(cache_dir / "reacher" / "lewm-monitor-3ep_object.ckpt"),
     )
+    parser.add_argument(
+        "--base-object-checkpoint",
+        default=None,
+        help=(
+            "Optional serialized model object used when --checkpoint points to a "
+            "weights-only state_dict such as *_weights_epoch_1.pt."
+        ),
+    )
     parser.add_argument("--cache-dir", default=str(cache_dir))
     parser.add_argument(
         "--out-dir",
@@ -53,6 +61,28 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=3072)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     return parser.parse_args()
+
+
+def load_model(args):
+    checkpoint = Path(args.checkpoint)
+    obj = torch.load(checkpoint, map_location="cpu", weights_only=False)
+
+    if isinstance(obj, nn.Module):
+        return obj
+
+    if not isinstance(obj, dict):
+        raise TypeError(f"Unsupported checkpoint object type: {type(obj)!r}")
+
+    if args.base_object_checkpoint is None:
+        raise ValueError(
+            "--checkpoint appears to be a weights-only state_dict. "
+            "Pass --base-object-checkpoint pointing to a matching *_object.ckpt file."
+        )
+
+    print("loading base model object:", args.base_object_checkpoint)
+    model = torch.load(args.base_object_checkpoint, map_location="cpu", weights_only=False)
+    model.load_state_dict(obj, strict=True)
+    return model
 
 
 def load_dataset(args):
@@ -261,7 +291,7 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
 
     print("loading model:", args.checkpoint)
-    model = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
+    model = load_model(args)
     model = model.to(args.device)
 
     print("loading dataset:", args.dataset)
