@@ -39,6 +39,7 @@ monitor:
 
 velocity_aux:
   enabled: False
+  mode: delta_concat
   weight: 0.05
   columns:
     - 4

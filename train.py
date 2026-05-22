@@ -105,6 +105,35 @@ def build_monitor_dict(batch, emb, act_emb, pred_emb, tgt_emb):
         return metrics
 
 
+def get_velocity_aux_mode(velocity_cfg):
+    mode = velocity_cfg.get("mode", "delta_concat")
+    if mode not in {"single_emb", "delta_concat"}:
+        raise ValueError(
+            "Unsupported velocity_aux.mode="
+            f"{mode!r}; expected 'single_emb' or 'delta_concat'."
+        )
+    return mode
+
+
+def get_velocity_aux_input_dim(velocity_cfg, embed_dim):
+    mode = get_velocity_aux_mode(velocity_cfg)
+    return 2 * embed_dim if mode == "delta_concat" else embed_dim
+
+
+def build_velocity_aux_batch(emb, observation, columns, mode):
+    if mode == "single_emb":
+        return emb, observation[..., columns]
+
+    if emb.size(1) < 2:
+        raise ValueError("velocity_aux.mode='delta_concat' requires at least two time steps.")
+
+    emb_t = emb[:, 1:]
+    emb_delta = emb[:, 1:] - emb[:, :-1]
+    aux_input = torch.cat((emb_t, emb_delta), dim=-1)
+    target = observation[:, 1:, columns]
+    return aux_input, target
+
+
 def add_velocity_aux_loss(self, output, batch, emb, stage, cfg):
     velocity_cfg = cfg.get("velocity_aux", {})
     if not velocity_cfg.get("enabled", False):
@@ -115,8 +144,12 @@ def add_velocity_aux_loss(self, output, batch, emb, stage, cfg):
         raise AttributeError("velocity_aux is enabled but model.velocity_aux_head is missing.")
 
     columns = [int(c) for c in velocity_cfg.get("columns", [4, 5])]
-    target = batch["observation"][..., columns].detach().float()
-    pred = self.model.velocity_aux_head(emb).float()
+    mode = get_velocity_aux_mode(velocity_cfg)
+    aux_input, target = build_velocity_aux_batch(
+        emb, batch["observation"], columns, mode
+    )
+    target = target.detach().float()
+    pred = self.model.velocity_aux_head(aux_input).float()
 
     per_dim_mse = (pred - target).pow(2).mean(dim=(0, 1))
     aux_loss = per_dim_mse.mean()
@@ -133,6 +166,8 @@ def add_velocity_aux_loss(self, output, batch, emb, stage, cfg):
         "pred_std": pred.detach().std(unbiased=False),
         "target_std": target.detach().std(unbiased=False),
     }
+    if mode == "delta_concat":
+        metrics["emb_delta_norm"] = aux_input[..., emb.shape[-1] :].detach().norm(dim=-1).mean()
     for i, col in enumerate(columns):
         name = "qvel0" if col == 4 else "qvel1" if col == 5 else f"obs{col}"
         metrics[f"{name}_mse"] = per_dim_mse[i].detach()
@@ -233,7 +268,7 @@ def run(cfg):
     if velocity_cfg.get("enabled", False):
         columns = [int(c) for c in velocity_cfg.get("columns", [4, 5])]
         world_model.velocity_aux_head = VelocityAuxHead(
-            input_dim=cfg.wm.embed_dim,
+            input_dim=get_velocity_aux_input_dim(velocity_cfg, cfg.wm.embed_dim),
             output_dim=len(columns),
             hidden_dim=int(velocity_cfg.get("hidden_dim", 256)),
         )
