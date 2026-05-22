@@ -38,6 +38,15 @@ def parse_args():
     cache_dir = Path(os.environ.get("STABLEWM_HOME", Path.home() / ".stable_worldmodel"))
     parser.add_argument("--dataset", default="reacher")
     parser.add_argument(
+        "--feature-mode",
+        choices=["single_emb", "delta_concat"],
+        default="single_emb",
+        help=(
+            "Probe single-frame embeddings or concat(emb_t, emb_t - emb_{t-1}) "
+            "for temporal-delta velocity analysis."
+        ),
+    )
+    parser.add_argument(
         "--checkpoint",
         default=str(cache_dir / "reacher" / "lewm-monitor-3ep_object.ckpt"),
     )
@@ -102,6 +111,20 @@ def load_dataset(args):
     return dataset
 
 
+def build_probe_features(args, emb, obs):
+    if args.feature_mode == "single_emb":
+        return emb.reshape(-1, emb.shape[-1]), obs.reshape(-1, obs.shape[-1])
+
+    if emb.size(1) < 2:
+        raise ValueError("feature-mode=delta_concat requires at least two time steps.")
+
+    emb_t = emb[:, 1:]
+    emb_delta = emb[:, 1:] - emb[:, :-1]
+    features = torch.cat((emb_t, emb_delta), dim=-1)
+    targets = obs[:, 1:]
+    return features.reshape(-1, features.shape[-1]), targets.reshape(-1, targets.shape[-1])
+
+
 def extract_latents(args, model, dataset):
     rng = random.Random(args.seed)
     n = min(args.max_sequences, len(dataset))
@@ -124,8 +147,9 @@ def extract_latents(args, model, dataset):
             output = model.encode({"pixels": pixels})
             emb = output["emb"].detach().cpu()
             obs = batch["observation"].detach().float().cpu()
-            xs.append(emb.reshape(-1, emb.shape[-1]))
-            ys.append(obs.reshape(-1, obs.shape[-1]))
+            x, y = build_probe_features(args, emb, obs)
+            xs.append(x)
+            ys.append(y)
             if (batch_idx + 1) % 25 == 0:
                 print(f"extracted {min((batch_idx + 1) * args.extract_batch_size, n)}/{n} sequences")
 
@@ -261,6 +285,7 @@ def write_outputs(out_dir, args, results, histories, x, y):
         "",
         f"- checkpoint: `{args.checkpoint}`",
         f"- dataset: `{args.dataset}`",
+        f"- feature mode: `{args.feature_mode}`",
         f"- 提取序列数: `{args.max_sequences}`",
         f"- 有效 latent 帧数: `{x.shape[0]}`",
         f"- latent 维度: `{x.shape[1]}`",
