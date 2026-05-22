@@ -7,29 +7,12 @@ import lightning as pl
 import stable_pretraining as spt
 import stable_worldmodel as swm
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 from lightning.pytorch.loggers import CSVLogger, WandbLogger
 from omegaconf import OmegaConf, open_dict
 
-from module import SIGReg
+from module import SIGReg, VelocityAuxHead
 from utils import get_column_normalizer, get_img_preprocessor, SaveCkptCallback
-
-
-class VelocityAuxHead(nn.Module):
-    """Small readout head used to encourage latents to retain velocity state."""
-
-    def __init__(self, input_dim: int, output_dim: int = 2, hidden_dim: int = 256):
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.LayerNorm(input_dim),
-            nn.Linear(input_dim, hidden_dim),
-            nn.GELU(),
-            nn.Linear(hidden_dim, output_dim),
-        )
-
-    def forward(self, emb):
-        return self.net(emb)
 
 
 def load_train_dataset(dataset_name, cache_dir=None, **dataset_cfg):

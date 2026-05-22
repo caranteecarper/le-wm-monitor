@@ -34,6 +34,22 @@ class SIGReg(torch.nn.Module):
         err = (x_t.cos().mean(-3) - self.phi).square() + x_t.sin().mean(-3).square()
         statistic = (err @ self.weights) * proj.size(-2)
         return statistic.mean() # average over projections and time
+
+
+class VelocityAuxHead(nn.Module):
+    """Small readout head used to encourage latents to retain velocity state."""
+
+    def __init__(self, input_dim: int, output_dim: int = 2, hidden_dim: int = 256):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.LayerNorm(input_dim),
+            nn.Linear(input_dim, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, output_dim),
+        )
+
+    def forward(self, emb):
+        return self.net(emb)
     
 class FeedForward(nn.Module):
     """FeedForward network used in Transformers"""

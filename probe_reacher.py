@@ -11,6 +11,8 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader, Subset, TensorDataset
 
+# Keep this symbol visible for object checkpoints saved while train.py was __main__.
+from module import VelocityAuxHead
 from utils import get_img_preprocessor
 
 
