@@ -33,6 +33,12 @@ optimizer:
   lr: 5e-5
   weight_decay: 1e-3
 
+monitor:
+  enabled: true
+  on_step: true
+  on_epoch: true
+  csv_logger: true
+
 num_preds: 1
 
 loss:

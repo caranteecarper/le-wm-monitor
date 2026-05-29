@@ -1,5 +1,15 @@
 _target_: jepa.JEPA
 
+pred_proj_type: mlp
+pred_proj_hidden_dim: 2048
+bottleneck_dim: 64
+grid_size: 8
+grid_min: -2.0
+grid_max: 2.0
+adaptive_grid: false
+use_base_linear: true
+sparse_lambda: 1e-5
+
 encoder:
   _target_: stable_pretraining.backbone.utils.vit_hf
   size: tiny
@@ -36,10 +46,15 @@ projector:
     _partial_: true
 
 pred_proj:
-  _target_: module.MLP
+  _target_: kan_module.build_pred_proj
+  pred_proj_type: ${model.pred_proj_type}
   input_dim: ${embed_dim}
   output_dim: ${embed_dim}
-  hidden_dim: 2048
-  norm_fn:
-    _target_: torch.nn.BatchNorm1d
-    _partial_: true
+  hidden_dim: ${model.pred_proj_hidden_dim}
+  bottleneck_dim: ${model.bottleneck_dim}
+  grid_size: ${model.grid_size}
+  grid_min: ${model.grid_min}
+  grid_max: ${model.grid_max}
+  adaptive_grid: ${model.adaptive_grid}
+  use_base_linear: ${model.use_base_linear}
+  sparse_lambda: ${model.sparse_lambda}

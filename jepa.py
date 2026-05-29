@@ -17,6 +17,15 @@ class JEPA(nn.Module):
         action_encoder,
         projector=None,
         pred_proj=None,
+        pred_proj_type="mlp",
+        pred_proj_hidden_dim=2048,
+        bottleneck_dim=64,
+        grid_size=8,
+        grid_min=-2.0,
+        grid_max=2.0,
+        adaptive_grid=False,
+        use_base_linear=True,
+        sparse_lambda=1e-5,
     ):
         super().__init__()
 
@@ -25,6 +34,7 @@ class JEPA(nn.Module):
         self.action_encoder = action_encoder
         self.projector = projector or nn.Identity()
         self.pred_proj = pred_proj or nn.Identity()
+        self.pred_proj_type = pred_proj_type
 
     def encode(self, info):
         """Encode observations and actions into embeddings.
